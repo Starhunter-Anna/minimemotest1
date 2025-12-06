@@ -1,17 +1,11 @@
-const CACHE_NAME = 'minimemo-v2';
+const CACHE_NAME = 'minimemo-v3';
 
-// Files we know are local
+// Only cache the shell files initially. 
+// Vite generates hashed filenames for JS/CSS (e.g., index-A1b2.js), so we can't hardcode them here.
+// We will cache them dynamically in the fetch event.
 const STATIC_ASSETS = [
   '/',
   '/index.html',
-  '/index.tsx',
-  '/App.tsx',
-  '/types.ts',
-  '/constants.ts',
-  '/components/NoteCard.tsx',
-  '/components/NoteEditor.tsx',
-  '/components/FilterBar.tsx',
-  '/components/SettingsModal.tsx',
   '/manifest.json'
 ];
 
@@ -42,43 +36,47 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Strategy for External CDN Assets (React, Fonts, Tailwind)
-  // Stale-While-Revalidate: Use cache if available, but update in background.
-  // Essential for making the CDN-based React app work offline.
+  // 1. External dependencies (Tailwind CDN, Fonts) - Stale While Revalidate
   if (url.hostname.includes('tailwindcss.com') ||
       url.hostname.includes('googleapis.com') ||
-      url.hostname.includes('gstatic.com') ||
-      url.hostname.includes('aistudiocdn.com')) {
+      url.hostname.includes('gstatic.com')) {
     
     event.respondWith(
       caches.open(CACHE_NAME).then(async (cache) => {
         const cachedResponse = await cache.match(event.request);
-        
-        // Create a promise to fetch and update cache
-        const fetchPromise = fetch(event.request)
-          .then((networkResponse) => {
-            // Only cache valid responses
-            if(networkResponse.ok) {
-                cache.put(event.request, networkResponse.clone());
-            }
-            return networkResponse;
-          })
-          .catch(() => {
-            // Network failed, nothing to do here
-          });
-
-        // Return cached response immediately if available, otherwise wait for network
+        const fetchPromise = fetch(event.request).then((networkResponse) => {
+          if(networkResponse.ok) {
+              cache.put(event.request, networkResponse.clone());
+          }
+          return networkResponse;
+        }).catch(() => null);
         return cachedResponse || fetchPromise;
       })
     );
     return;
   }
 
-  // Strategy for Local App Files
-  // Cache First, fall back to network
+  // 2. Local Assets (JS, CSS, HTML) - Cache First, Fallback to Network
+  // This handles the Vite-generated assets (e.g. /assets/index-xyz.js)
   event.respondWith(
     caches.match(event.request).then((response) => {
-      return response || fetch(event.request);
+      if (response) {
+        return response;
+      }
+      return fetch(event.request).then((networkResponse) => {
+        // Cache valid responses from our own origin
+        if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
+          return networkResponse;
+        }
+        
+        // Clone the response because it's a stream and can only be consumed once
+        const responseToCache = networkResponse.clone();
+        caches.open(CACHE_NAME).then((cache) => {
+          cache.put(event.request, responseToCache);
+        });
+        
+        return networkResponse;
+      });
     })
   );
 });
